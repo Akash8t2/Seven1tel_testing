@@ -1,5 +1,6 @@
 requests
 phonenumbers
+pycountry
 python-telegram-bot[job-queue]==20.7
 httpx==0.25.2
 beautifulsoup4==4.12.3
