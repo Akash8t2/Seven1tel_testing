@@ -12,9 +12,9 @@
       "description": "Telegram Chat/Group ID (e.g. -100123456789)",
       "value": ""
     },
-    "ACCOUNTS": {
-      "description": "List of Orange Carrier accounts in JSON format",
-      "value": "[{\"email\":\"user1@example.com\",\"password\":\"pass1\"},{\"email\":\"user2@example.com\",\"password\":\"pass2\"}]"
+    "API_TOKEN": {
+      "description": "Seven1tel API Token",
+      "value": ""
     }
   },
   "formation": {
