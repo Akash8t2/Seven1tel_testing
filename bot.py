@@ -82,7 +82,7 @@ def format_message(sms):
 <pre>{msg}</pre>
 
 👨‍💻 <b>:POWERED BY</b>
-<a href="https://t.me/+k86ioGpoFD40NWE0"> AKASH OF Method</a>
+<a href="https://t.me/CKBD_number"> CKBD OTP</a>
 """
 
 # ✅ Send to Telegram with buttons
@@ -96,7 +96,7 @@ def send_telegram(text):
         "reply_markup": {
             "inline_keyboard": [
                 [
-                    {"text": "📞 ALL NUMBER 📞", "url": "https://t.me/+k86ioGpoFD40NWE0"},
+                    {"text": "📞 ALL NUMBER 📞", "url": "https://t.me/CKBD_number"},
                     
                 ]
             ]
