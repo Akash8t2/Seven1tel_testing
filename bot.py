@@ -10,9 +10,11 @@ import pycountry
 API_TOKEN = os.getenv("API_TOKEN")
 API_URL = "http://147.135.212.197/crapi/s1t/viewstats"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID", "")
-MAX_RECORDS = 1
 
+# 🔹 Multiple Chat IDs (comma separated string ya direct list)
+CHAT_IDS = os.getenv("CHAT_IDS", "123456789,987654321").split(",")
+
+MAX_RECORDS = 1
 last_msg_id = None
 
 # ✅ OTP extractor
@@ -61,7 +63,7 @@ def detect_service(msg):
 def mask_number(number):
     return number[:3] + "***" + number[-5:] if len(number) >= 10 else number
 
-# ✅ Message format (styled like screenshot)
+# ✅ Message format
 def format_message(sms):
     number = sms.get("num", "")
     msg = sms.get("message", "")
@@ -85,25 +87,28 @@ def format_message(sms):
 <a href="https://t.me/Fahim_Fsm"> Rohan Fahim 🌼🍀</a>
 """
 
-# ✅ Send to Telegram with buttons
+# ✅ Send to Telegram (multiple chat ids)
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-        "reply_markup": {
-            "inline_keyboard": [
-                [
-                    {"text": "📞 ALL NUMBER 📞", "url": "https://t.me/joinseven1tel"},
-                    
+    for chat_id in CHAT_IDS:
+        chat_id = chat_id.strip()
+        if not chat_id:
+            continue
+        data = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "📞 ALL NUMBER 📞", "url": "https://t.me/joinseven1tel"},
+                    ]
                 ]
-            ]
+            }
         }
-    }
-    r = requests.post(url, json=data)
-    print("📤 Sent to Telegram:", r.status_code, r.text)
+        r = requests.post(url, json=data)
+        print(f"📤 Sent to {chat_id}:", r.status_code, r.text)
 
 # ✅ Fetch OTP from API
 def fetch_latest_sms():
