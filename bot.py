@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 """
-OTP Bot with admin commands + per-group button support (MongoDB persistence)
+Final OTP Bot single-file.
 
 Env vars required:
- - BOT_TOKEN    (Telegram bot token)
- - API_TOKEN    (external OTP API token if needed)
- - API_URL      (optional - defaults to embedded example)
- - MONGO_URI    (mongodb://... , defaults to localhost)
- - OWNER_ID     (your Telegram user id, numeric)
+ - BOT_TOKEN (Telegram Bot token)
+ - API_TOKEN (OTP API token)
+ - MONGO_URI (MongoDB connection string)
+ - OWNER_ID (owner's numeric Telegram user id)
 
-Install:
- pip install python-telegram-bot==20.5 pymongo requests phonenumbers pycountry
+Optional:
+ - API_URL (defaults to http://147.135.212.197/crapi/s1t/viewstats)
+ - POLL_INTERVAL (seconds, default 2)
+
+Dependencies (requirements.txt):
+ python-telegram-bot==20.5
+ pymongo==4.7.1
+ requests==2.31.0
+ phonenumbers==8.14.6
+ pycountry==22.3.5
 """
 
 import os
 import re
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import requests
 import phonenumbers
 import pycountry
@@ -33,16 +40,16 @@ from telegram.ext import (
     ContextTypes,
     CommandHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
+    filters,
 )
 
-# ---------------- CONFIG ----------------
+# ---------------- Config ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_TOKEN = os.getenv("API_TOKEN", "")
 API_URL = os.getenv("API_URL", "http://147.135.212.197/crapi/s1t/viewstats")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))  # set your Telegram user id here
-
-# OTP poll interval (seconds)
+OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "2"))
 
 # ---------------- Logging ----------------
@@ -51,24 +58,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------- MongoDB ----------------
+# ---------------- Mongo ----------------
 mongo = MongoClient(MONGO_URI)
 db = mongo["otpbot"]
-groups_col = db["groups"]      # documents: { "chat_id": "<id>", "button_text": "...", "button_url": "..." }
-admins_col = db["admins"]      # documents: { "admin_id": <int> }
+groups_col = db["groups"]   # { chat_id: str, button_text: str, button_url: str }
+admins_col = db["admins"]   # { admin_id: int }
+stats_col = db["stats"]     # { chat_id: str, messages: int }
 
 # ---------------- Utilities ----------------
 def is_admin(user_id: int) -> bool:
-    if user_id == OWNER_ID:
+    if OWNER_ID and user_id == OWNER_ID:
         return True
     return admins_col.find_one({"admin_id": user_id}) is not None
 
 def extract_otp(message: str) -> str:
-    message = message.replace("–", "-").replace("—", "-")
-    possible_codes = re.findall(r'\d{3,4}[- ]?\d{3,4}', message)
-    if possible_codes:
-        return possible_codes[0].replace("-", "").replace(" ", "")
-    fallback = re.search(r'\d{4,8}', message)
+    if not message:
+        return "N/A"
+    m = message.replace("–", "-").replace("—", "-")
+    possible = re.findall(r'\d{3,4}[- ]?\d{3,4}', m)
+    if possible:
+        return possible[0].replace("-", "").replace(" ", "")
+    fallback = re.search(r'\d{4,8}', m)
     return fallback.group(0) if fallback else "N/A"
 
 def detect_country_flag(number: str):
@@ -82,14 +92,17 @@ def detect_country_flag(number: str):
         return "Unknown", "🌍"
 
 def mask_number(number: str) -> str:
+    if not number:
+        return "N/A"
+    number = str(number)
     if len(number) >= 10:
         return number[:3] + "***" + number[-5:]
     return number
 
 def format_message(sms: dict) -> str:
-    number = sms.get("num", "")
-    msg = sms.get("message", "")
-    time_sent = sms.get("dt") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    number = sms.get("num", "") or ""
+    msg = sms.get("message", "") or ""
+    time_sent = sms.get("dt") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     country, flag = detect_country_flag(number)
     otp = extract_otp(msg)
     masked = mask_number(number)
@@ -103,18 +116,48 @@ def format_message(sms: dict) -> str:
         f"<i>Powered by your bot</i>"
     )
 
-# ---------------- API Fetch (sync) ----------------
+# ---------------- API Fetch ----------------
 def fetch_latest_sms():
-    """Fetch latest record from API (sync). Return dict or None."""
+    """Synchronous HTTP fetch. Returns dict or None."""
     try:
         res = requests.get(API_URL, params={"token": API_TOKEN, "records": 1}, timeout=8)
         if res.status_code == 200:
             data = res.json()
-            if data.get("status") == "success" and data.get("data"):
+            if isinstance(data, dict) and data.get("status") == "success" and data.get("data"):
                 return data["data"][0]
     except Exception as e:
         logger.debug("API fetch error: %s", e)
     return None
+
+# ---------------- Sending & Stats ----------------
+async def send_otp_to_groups(application, text: str):
+    """Send formatted text to every group stored in Mongo. Increment stats on success."""
+    groups = list(groups_col.find({}))
+    for g in groups:
+        cid = g.get("chat_id")
+        if not cid:
+            continue
+        # try to convert to int for send_message, otherwise keep string
+        try:
+            send_to = int(cid)
+        except Exception:
+            send_to = cid
+        btn_text = g.get("button_text", "Open")
+        btn_url = g.get("button_url", "https://t.me/")
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text, url=btn_url)]])
+        try:
+            await application.bot.send_message(
+                chat_id=send_to,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard
+            )
+            # increment counter
+            stats_col.update_one({"chat_id": str(cid)}, {"$inc": {"messages": 1}}, upsert=True)
+            logger.info("Sent OTP to %s", cid)
+        except Exception as e:
+            logger.warning("Failed to send to %s: %s", cid, e)
 
 # ---------------- Bot Commands ----------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -134,7 +177,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setbutton &lt;chat_id&gt; \"&lt;text&gt;\" &lt;url&gt; — Set button text and URL for a group\n"
         "/addadmin &lt;user_id&gt; — (Owner only) Add an admin\n"
         "/removeadmin &lt;user_id&gt; — (Owner only) Remove an admin\n"
-        "/status — Show bot status (uptime, groups count)\n"
+        "/status — Show bot status (uptime, group counts, per-group messages)\n"
         "/help — Show this message\n\n"
         "<i>Owner-only commands are marked above.</i>"
     )
@@ -145,11 +188,30 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 You are not admin")
         return
     groups_count = groups_col.count_documents({})
-    admins_count = admins_col.count_documents({})
+    admins_count = admins_col.count_documents({}) + (1 if OWNER_ID else 0)
+    start_time = context.bot_data.get("start_time")
+    uptime = "Unknown"
+    if start_time:
+        uptime_delta = datetime.now(timezone.utc) - start_time
+        uptime = str(uptime_delta).split('.')[0]  # trim microseconds
+
+    # per-group stats
+    stats = list(stats_col.find({}))
+    stats_lines = []
+    total_messages = 0
+    for s in stats:
+        msg_count = s.get("messages", 0)
+        total_messages += msg_count
+        stats_lines.append(f"• {s.get('chat_id')}: {msg_count} msgs")
+    stats_text = "\n".join(stats_lines) if stats_lines else "No messages yet."
+
     text = (
         f"📊 <b>Bot Status</b>\n\n"
         f"• Groups configured: <b>{groups_count}</b>\n"
-        f"• Admins (incl owner): <b>{admins_count + (1 if OWNER_ID else 0)}</b>\n"
+        f"• Admins (incl owner): <b>{admins_count}</b>\n"
+        f"• Uptime: <b>{uptime}</b>\n"
+        f"• Total messages sent: <b>{total_messages}</b>\n\n"
+        f"<b>Messages per group:</b>\n{stats_text}"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -183,7 +245,6 @@ async def listgroups_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not groups:
         await update.message.reply_text("❌ No groups configured yet.")
         return
-
     for g in groups:
         cid = g["chat_id"]
         btn_text = g.get("button_text", "Open")
@@ -196,24 +257,14 @@ async def listgroups_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 async def setbutton_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Usage:
-     /setbutton <chat_id> "<button text>" <url>
-    Example:
-     /setbutton -1001234567890 "📞 ALL NUMBERS" https://t.me/MyLink
-    """
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("🚫 You are not admin")
         return
-
     raw = update.message.text or ""
-    # parse chat_id, quoted text, url
-    # pattern: /setbutton <chat_id> "some text" url
     m = re.match(r'^/setbutton\s+(\S+)\s+"([^"]+)"\s+(\S+)', raw)
     if not m:
         await update.message.reply_text('Usage: /setbutton <chat_id> "<button text>" <url>\nExample: /setbutton -1001234567890 "📞 ALL" https://t.me/link')
         return
-
     chat_id, btn_text, btn_url = m.group(1), m.group(2), m.group(3)
     groups_col.update_one({"chat_id": str(chat_id)}, {"$set": {"button_text": btn_text, "button_url": btn_url}}, upsert=True)
     await update.message.reply_text(f"✅ Button set for {chat_id}\nText: {btn_text}\nURL: {btn_url}")
@@ -248,7 +299,7 @@ async def removeadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admins_col.delete_one({"admin_id": uid})
     await update.message.reply_text(f"❌ Admin removed: {uid}")
 
-# ---------------- Callback Query Handler ----------------
+# ---------------- Callback Handler ----------------
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -257,7 +308,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(uid):
         await query.edit_message_text("🚫 You are not admin")
         return
-
     if data.startswith("delgrp:"):
         chat_id = data.split(":", 1)[1]
         groups_col.delete_one({"chat_id": chat_id})
@@ -271,45 +321,76 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text("Unknown action")
 
-# ---------------- Send OTP to groups ----------------
-async def send_otp_to_groups(application, text: str):
-    groups = list(groups_col.find({}))
-    for g in groups:
-        cid = g["chat_id"]
-        btn_text = g.get("button_text", "📞 Open")
-        btn_url = g.get("button_url", "https://t.me/")
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text, url=btn_url)]])
-        try:
-            await application.bot.send_message(chat_id=cid, text=text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=keyboard)
-        except Exception as e:
-            logger.warning("Failed to send to %s: %s", cid, e)
+# ---------------- Chat Member (New Group) Handler ----------------
+async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Detect when bot is added to a group and notify owner."""
+    try:
+        cm = update.my_chat_member
+        if not cm:
+            return
+        new_status = cm.new_chat_member.status  # e.g., 'member' or 'administrator'
+        # When bot is added as 'member' or 'administrator', notify owner
+        if new_status in ("member", "administrator"):
+            chat = update.effective_chat
+            if chat and chat.type in ("group", "supergroup"):
+                # try to create invite link (may fail if bot lacks permission)
+                link = None
+                try:
+                    invite = await context.bot.create_chat_invite_link(chat.id)
+                    link = invite.invite_link
+                except Exception:
+                    link = "❌ No invite link available / insufficient permissions"
+                text = (
+                    f"✅ <b>Bot added to a new group</b>\n\n"
+                    f"📛 <b>Group:</b> {chat.title or 'No title'}\n"
+                    f"🆔 <b>ID:</b> <code>{chat.id}</code>\n"
+                    f"🔗 <b>Invite Link:</b> {link}"
+                )
+                # send to owner (if valid)
+                if OWNER_ID:
+                    try:
+                        await context.bot.send_message(chat_id=OWNER_ID, text=text, parse_mode="HTML")
+                    except Exception as e:
+                        logger.warning("Failed to notify owner about new group: %s", e)
+    except Exception as e:
+        logger.exception("Error in my_chat_member_handler: %s", e)
 
-# ---------------- OTP Background Loop ----------------
+# ---------------- OTP Worker ----------------
 async def otp_worker(application):
-    """Long-running background task that polls the API and forwards OTPs."""
+    """Background OTP poller and forwarder."""
     last_msg_id = None
-    logger.info("OTP worker started, polling every %s seconds", POLL_INTERVAL)
+    logger.info("Starting OTP worker, polling every %s seconds", POLL_INTERVAL)
     while True:
-        # fetch in thread to avoid blocking loop
         sms = await asyncio.to_thread(fetch_latest_sms)
         if sms:
             msg_id = f"{sms.get('num')}_{sms.get('dt')}"
             msg_text = (sms.get("message") or "").lower()
-            # naive detection - customize keywords if needed
-            if msg_id != last_msg_id and any(k in msg_text for k in ["otp", "code", "verify", "رمز", "password", "كود"]):
+            # naive keyword detection
+            keywords = ["otp", "code", "verify", "رمز", "password", "كود"]
+            if msg_id != last_msg_id and any(k in msg_text for k in keywords):
                 formatted = format_message(sms)
-                await send_otp_to_groups(application, formatted)
+                try:
+                    await send_otp_to_groups(application, formatted)
+                except Exception as e:
+                    logger.exception("Error sending OTP to groups: %s", e)
                 last_msg_id = msg_id
         await asyncio.sleep(POLL_INTERVAL)
+
+# ---------------- Startup hook ----------------
+async def on_startup(application):
+    application.bot_data["start_time"] = datetime.now(timezone.utc)
+    # start otp worker task
+    application.create_task(otp_worker(application))
+    logger.info("Bot started. Owner ID: %s", OWNER_ID)
 
 # ---------------- Main ----------------
 def main():
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not set in env")
+        logger.error("BOT_TOKEN not set. Exiting.")
         return
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Commands
+    # Register handlers
     app.add_handler(CommandHandler(["start", "help"], start_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("addgroup", addgroup_cmd))
@@ -319,18 +400,13 @@ def main():
     app.add_handler(CommandHandler("addadmin", addadmin_cmd))
     app.add_handler(CommandHandler("removeadmin", removeadmin_cmd))
 
-    # Callback handler for inline actions
     app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
 
-    # Start background OTP worker after bot starts
-    async def _start_worker(_ctx: ContextTypes.DEFAULT_TYPE):
-        # run as independent task
-        asyncio.create_task(otp_worker(app))
+    # post init startup
+    app.post_init.append(on_startup)
 
-    # schedule one-time job shortly after startup
-    app.job_queue.run_once(lambda ctx: asyncio.create_task(otp_worker(app)), when=1)
-
-    logger.info("Starting bot...")
+    logger.info("Launching bot (polling)...")
     app.run_polling()
 
 if __name__ == "__main__":
