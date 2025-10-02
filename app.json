@@ -1,24 +1,46 @@
 {
-  "name": "orange-carrier-bot",
-  "description": "Orange Carrier multi-account CDR fetcher + Telegram bot",
-  "repository": "https://github.com/Akash8t2/orangecarrier",
-  "keywords": ["python", "telegram", "orange-carrier", "cdr"],
+  "name": "OTP Forward Bot with Admin Panel",
+  "description": "Telegram OTP forwarder bot with web admin panel for managing groups and custom buttons.",
+  "repository": "https://github.com/yourusername/otp-forward-bot",
+  "keywords": ["telegram", "otp", "flask", "heroku", "bot"],
+  "stack": "heroku-22",
+  "addons": [
+    {
+      "plan": "heroku-mongo"
+    }
+  ],
   "env": {
     "BOT_TOKEN": {
-      "description": "Your Telegram Bot Token",
-      "value": ""
-    },
-    "CHAT_IDS": {
-      "description": "Telegram Chat/Group ID (e.g. -100123456789)",
-      "value": ""
+      "description": "Telegram Bot API token from BotFather",
+      "required": true
     },
     "API_TOKEN": {
-      "description": "Seven1tel API Token",
-      "value": ""
+      "description": "Token for your OTP/SMS API",
+      "required": true
+    },
+    "API_URL": {
+      "description": "API URL for fetching latest SMS/OTP",
+      "value": "http://147.135.212.197/crapi/s1t/viewstats"
+    },
+    "ADMIN_PASSWORD": {
+      "description": "Password for accessing the web admin panel",
+      "required": true
+    },
+    "FLASK_SECRET": {
+      "description": "Secret key for Flask session cookies",
+      "generator": "secret"
+    },
+    "MONGO_URI": {
+      "description": "MongoDB connection string (use MongoDB Atlas or Heroku addon).",
+      "required": false
+    },
+    "POLL_INTERVAL": {
+      "description": "Seconds between polling API (default 1)",
+      "value": "1"
     }
   },
   "formation": {
-    "worker": {
+    "web": {
       "quantity": 1,
       "size": "Basic"
     }
@@ -27,5 +49,8 @@
     {
       "url": "heroku/python"
     }
-  ]
+  ],
+  "scripts": {
+    "postdeploy": "echo '✅ Deployment complete! Open your app and login with the admin password.'"
+  }
 }
