@@ -1,15 +1,7 @@
 """
-OTP Bot with Web Admin Panel
-Single-file example using Flask + background thread + optional MongoDB
-Features:
- - Web admin UI (login with ADMIN_PASSWORD) to add/remove groups
- - Per-group button text + URL
- - Persist settings in MongoDB (if MONGO_URI set) or local JSON fallback
- - Background worker polls an external SMS API and forwards OTPs to configured groups
-
-Notes:
- - For production, use MongoDB Atlas (set MONGO_URI) or another persistent DB. Heroku's filesystem is ephemeral.
- - Secure ADMIN_PASSWORD and BOT_TOKEN using environment variables.
+OTP Bot with Web Admin Panel (fixed single-file)
+- Run web dyno with:    gunicorn bot:app
+- Run worker dyno with: python bot.py
 """
 
 from flask import Flask, request, redirect, url_for, render_template_string, session, flash, jsonify
@@ -20,6 +12,8 @@ import requests
 import re
 import json
 from datetime import datetime
+
+# Optional pymongo
 try:
     from pymongo import MongoClient
     MONGO_AVAILABLE = True
@@ -29,14 +23,12 @@ except Exception:
 # -----------------------
 # Configuration (env)
 # -----------------------
-BOT_TOKEN = os.getenv('BOT_TOKEN') or ''
-API_TOKEN = os.getenv('API_TOKEN') or ''
-API_URL = os.getenv('API_URL') or 'http://147.135.212.197/crapi/s1t/viewstats'
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
+API_TOKEN = os.getenv('API_TOKEN', '')
+API_URL = os.getenv('API_URL', 'http://147.135.212.197/crapi/s1t/viewstats')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'adminpass')
 MONGO_URI = os.getenv('MONGO_URI')  # if provided, will be used
 POLL_INTERVAL = float(os.getenv('POLL_INTERVAL', '1'))
-
-# JSON fallback file (not persistent on ephemeral hosts)
 DATA_FILE = os.getenv('DATA_FILE', 'bot_data.json')
 
 # Flask setup
@@ -51,51 +43,65 @@ if MONGO_URI and MONGO_AVAILABLE:
     db = client.get_default_database()
     groups_col = db.get_collection('groups')
     meta_col = db.get_collection('meta')
+
     def add_group_to_db(group):
         groups_col.update_one({'chat_id': group['chat_id']}, {'$set': group}, upsert=True)
+
     def remove_group_from_db(chat_id):
         groups_col.delete_one({'chat_id': chat_id})
+
     def get_groups_from_db():
         return list(groups_col.find({}, {'_id': 0}))
+
     def save_meta(key, value):
         meta_col.update_one({'k': key}, {'$set': {'v': value}}, upsert=True)
+
     def load_meta(key, default=None):
         doc = meta_col.find_one({'k': key})
         return doc['v'] if doc else default
+
     storage = 'mongo'
 else:
     # Fallback JSON storage
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'w') as f:
             json.dump({'groups': [], 'meta': {}}, f)
+
     def _read_data():
         with open(DATA_FILE, 'r') as f:
             return json.load(f)
+
     def _write_data(d):
         with open(DATA_FILE, 'w') as f:
             json.dump(d, f, indent=2)
+
     def add_group_to_db(group):
         d = _read_data()
-        groups = [g for g in d['groups'] if g['chat_id'] != group['chat_id']]
+        groups = [g for g in d.get('groups', []) if g['chat_id'] != group['chat_id']]
         groups.append(group)
         d['groups'] = groups
         _write_data(d)
+
     def remove_group_from_db(chat_id):
         d = _read_data()
-        d['groups'] = [g for g in d['groups'] if g['chat_id'] != chat_id]
+        d['groups'] = [g for g in d.get('groups', []) if g['chat_id'] != chat_id]
         _write_data(d)
+
     def get_groups_from_db():
         return _read_data().get('groups', [])
+
     def save_meta(key, value):
         d = _read_data()
         d.setdefault('meta', {})[key] = value
         _write_data(d)
+
     def load_meta(key, default=None):
         return _read_data().get('meta', {}).get(key, default)
+
     storage = 'json_fallback'
 
 # -----------------------
-# Helpers (from user's original script)
+# Helpers
 # -----------------------
 last_msg_id = None
 
@@ -110,20 +116,28 @@ def extract_otp(message):
 def mask_number(number):
     return number[:3] + "***" + number[-5:] if len(number) >= 10 else number
 
-# Format message (HTML)
 def format_message(sms):
     number = sms.get("num", "")
     msg = sms.get("message", "")
     time_sent = sms.get("dt") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     otp = extract_otp(msg)
     masked = mask_number(number)
+    return f"""<b> ✅ New OTP Received Successfully... </b>
 
-    return f"""<b> ✅ New OTP Received Successfully... </b>\n\n🕰️ <b>Time:</b> {time_sent}\n📞 <b>Number:</b> {masked}\n🔑 <b>OTP Code:</b> <code>{otp}</code>\n❤️ <b>Full Message:</b>\n<pre>{msg}</pre>\n"""
+🕰️ <b>Time:</b> {time_sent}
+📞 <b>Number:</b> {masked}
+🔑 <b>OTP Code:</b> <code>{otp}</code>
+❤️ <b>Full Message:</b>
+<pre>{msg}</pre>
+"""
 
 # -----------------------
 # Telegram send helper
 # -----------------------
 def send_telegram_to_group(chat_id, text, button_text=None, button_url=None):
+    if not BOT_TOKEN:
+        print("WARN: BOT_TOKEN not set; skipping send")
+        return None, "no-bot-token"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         'chat_id': chat_id,
@@ -142,20 +156,19 @@ def send_telegram_to_group(chat_id, text, button_text=None, button_url=None):
         return None, str(e)
 
 # -----------------------
-# Background worker: polls API and forwards to configured groups
+# Background worker
 # -----------------------
-
 def fetch_latest_sms():
     try:
         res = requests.get(API_URL, params={'token': API_TOKEN, 'records': 1}, timeout=8)
         if res.status_code == 200:
             data = res.json()
             if data.get('status') == 'success':
-                return data.get('data', [])[0]
+                data_list = data.get('data', [])
+                return data_list[0] if data_list else None
     except Exception as e:
         print('API Error:', e)
     return None
-
 
 def worker_loop():
     global last_msg_id
@@ -165,7 +178,6 @@ def worker_loop():
         if sms:
             msg_id = f"{sms.get('num')}_{sms.get('dt')}"
             msg_text = sms.get('message', '').lower()
-            # basic filtering
             if msg_id != last_msg_id and any(k in msg_text for k in ['otp', 'code', 'verify', 'كود', 'رمز', 'password']):
                 formatted = format_message(sms)
                 groups = get_groups_from_db()
@@ -180,14 +192,9 @@ def worker_loop():
                 last_msg_id = msg_id
         time.sleep(POLL_INTERVAL)
 
-# Start worker in a separate thread
-worker = threading.Thread(target=worker_loop, daemon=True)
-worker.start()
-
 # -----------------------
 # Admin web UI (simple)
 # -----------------------
-
 ADMIN_TEMPLATE = '''
 <!doctype html>
 <title>OTP Bot Admin</title>
@@ -228,7 +235,6 @@ ADMIN_TEMPLATE = '''
   </li>
 {% endfor %}
 </ul>
-
 '''
 
 LOGIN_TEMPLATE = '''
@@ -299,15 +305,17 @@ def remove_group(chat_id):
     remove_group_from_db(chat_id)
     return ('', 204)
 
-# Small API for clients (optional)
 @app.route('/api/groups')
 def api_groups():
-    # simple read-only
     return jsonify(get_groups_from_db())
 
 # -----------------------
-# Run app
+# Only start worker & dev server when run directly
 # -----------------------
 if __name__ == '__main__':
+    # start worker thread (only when running python bot.py)
+    worker = threading.Thread(target=worker_loop, daemon=True)
+    worker.start()
     port = int(os.getenv('PORT', 5000))
+    print("Starting Flask dev server (for local testing). Worker started as thread.")
     app.run(host='0.0.0.0', port=port)
