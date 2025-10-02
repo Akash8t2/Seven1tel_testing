@@ -1,51 +1,47 @@
 {
-  "name": "OTP Forward Bot with Admin Panel",
-  "description": "Telegram OTP forwarder bot with web admin panel for managing groups and custom buttons.",
-  "repository": "https://github.com/yourusername/otp-forward-bot",
-  "keywords": ["telegram", "otp", "flask", "heroku", "bot"],
-  "stack": "heroku-22",
-  "env": {
-    "BOT_TOKEN": {
-      "description": "Telegram Bot API token from BotFather",
-      "required": true
-    },
-    "API_TOKEN": {
-      "description": "Token for your OTP/SMS API",
-      "required": true
-    },
-    "API_URL": {
-      "description": "API URL for fetching latest SMS/OTP",
-      "value": "http://147.135.212.197/crapi/s1t/viewstats"
-    },
-    "ADMIN_PASSWORD": {
-      "description": "Password for accessing the web admin panel",
-      "required": true
-    },
-    "FLASK_SECRET": {
-      "description": "Secret key for Flask session cookies",
-      "generator": "secret"
-    },
-    "MONGO_URI": {
-      "description": "MongoDB connection string (Atlas URI).",
-      "value": "mongodb+srv://BrandedSupportGroup:BRANDED_WORLD@cluster0.v4odcq9.mongodb.net/?retryWrites=true&w=majority"
-    },
-    "POLL_INTERVAL": {
-      "description": "Seconds between polling API (default 1)",
-      "value": "1"
-    }
-  },
-  "formation": {
-    "web": {
-      "quantity": 1,
-      "size": "Basic"
-    }
-  },
+  "name": "otp-bot-admin",
+  "description": "Telegram OTP Bot with Admin Panel, MongoDB persistence, and per-group button support",
+  "repository": "https://github.com/yourusername/otp-bot-admin",
+  "logo": "https://telegram.org/img/t_logo.png",
+  "keywords": ["telegram", "bot", "otp", "admin", "mongodb"],
   "buildpacks": [
     {
       "url": "heroku/python"
     }
   ],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "API_TOKEN": {
+      "description": "API Token for your OTP provider",
+      "required": true
+    },
+    "API_URL": {
+      "description": "OTP API URL (default is http://147.135.212.197/crapi/s1t/viewstats)",
+      "value": "http://147.135.212.197/crapi/s1t/viewstats"
+    },
+    "MONGO_URI": {
+      "description": "MongoDB connection string, e.g., mongodb+srv://user:pass@cluster0.mongodb.net/otpbot",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram numeric user ID (owner of bot)",
+      "required": true
+    },
+    "POLL_INTERVAL": {
+      "description": "OTP polling interval in seconds",
+      "value": "2"
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "standard-1x"
+    }
+  },
   "scripts": {
-    "postdeploy": "echo '✅ Deployment complete! Open your app and login with the admin password.'"
+    "postdeploy": "echo 'OTP Bot deployed successfully!'"
   }
 }
