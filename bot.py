@@ -102,7 +102,7 @@ def send_telegram(text):
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "📞 ALL NUMBER 📞", "url": ""},
+                        {"text": "📞 ALL NUMBER 📞", "url": "https://t.me/Botcasx2"},
                     ]
                 ]
             }
