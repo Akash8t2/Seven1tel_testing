@@ -4,11 +4,6 @@
   "repository": "https://github.com/yourusername/otp-forward-bot",
   "keywords": ["telegram", "otp", "flask", "heroku", "bot"],
   "stack": "heroku-22",
-  "addons": [
-    {
-      "plan": "heroku-mongo"
-    }
-  ],
   "env": {
     "BOT_TOKEN": {
       "description": "Telegram Bot API token from BotFather",
@@ -31,8 +26,8 @@
       "generator": "secret"
     },
     "MONGO_URI": {
-      "description": "MongoDB connection string (use MongoDB Atlas or Heroku addon).",
-      "required": false
+      "description": "MongoDB connection string (Atlas URI).",
+      "value": "mongodb+srv://BrandedSupportGroup:BRANDED_WORLD@cluster0.v4odcq9.mongodb.net/?retryWrites=true&w=majority"
     },
     "POLL_INTERVAL": {
       "description": "Seconds between polling API (default 1)",
@@ -42,7 +37,7 @@
   "formation": {
     "web": {
       "quantity": 1,
-      "size": "Basic"
+      "size": "free"
     }
   },
   "buildpacks": [
