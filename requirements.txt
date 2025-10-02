@@ -6,3 +6,4 @@ httpx==0.25.2
 beautifulsoup4==4.12.3
 Flask
 gunicorn
+pymongo
