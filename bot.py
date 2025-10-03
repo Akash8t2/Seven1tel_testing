@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Final OTP Bot (single file)
+Final OTP Bot (single file) — updated country detection
 
 Env vars expected:
  - BOT_TOKEN    (required) Telegram bot token
@@ -159,14 +159,46 @@ def extract_otp(message: str) -> str:
     return fallback.group(0) if fallback else "N/A"
 
 def detect_country_flag(number: str):
-    try:
-        parsed = phonenumbers.parse(str(number), None)
-        region = phonenumbers.region_code_for_number(parsed)
-        country = pycountry.countries.get(alpha_2=region).name if region else "Unknown"
-        flag = ''.join([chr(ord(c) + 127397) for c in region.upper()]) if region else "🌍"
-        return country, flag
-    except Exception:
+    """
+    Robust country detection:
+    - Remove non-digit chars (handles masked numbers like 228***29936)
+    - Try parsing with '+' + cleaned digits
+    - If that fails, try parsing with default region 'US' as fallback
+    - Return (country_name, flag_emoji) or ("Unknown", "🌍")
+    """
+    if not number:
         return "Unknown", "🌍"
+    # keep digits only
+    cleaned = re.sub(r'\D', '', str(number))
+    if not cleaned:
+        return "Unknown", "🌍"
+
+    # Try parse with leading +
+    try:
+        to_parse = "+" + cleaned
+        parsed = phonenumbers.parse(to_parse, None)
+        region = phonenumbers.region_code_for_number(parsed)
+        if region:
+            country = pycountry.countries.get(alpha_2=region)
+            country_name = country.name if country else region
+            flag = ''.join([chr(ord(c) + 127397) for c in region.upper()])
+            return country_name, flag
+    except Exception:
+        pass
+
+    # Fallback: try parse as national number with US region (best-effort)
+    try:
+        parsed = phonenumbers.parse(cleaned, "US")
+        region = phonenumbers.region_code_for_number(parsed)
+        if region:
+            country = pycountry.countries.get(alpha_2=region)
+            country_name = country.name if country else region
+            flag = ''.join([chr(ord(c) + 127397) for c in region.upper()])
+            return country_name, flag
+    except Exception:
+        pass
+
+    return "Unknown", "🌍"
 
 def mask_number(number: str) -> str:
     s = str(number)
@@ -175,6 +207,7 @@ def mask_number(number: str) -> str:
     return s
 
 def format_message(sms: dict) -> str:
+    # Use raw values where possible (don't mask before detecting country)
     number = sms.get("num", "") or sms.get("number", "") or ""
     msg = sms.get("message", "") or sms.get("text", "") or ""
     time_sent = sms.get("dt") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
